@@ -66,16 +66,17 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   if (!ptr.has(e.pointerId)) return; const q = ptr.get(e.pointerId), dx = e.clientX - q.x, dy = e.clientY - q.y; q.x = e.clientX; q.y = e.clientY;
+  if (gyroOn) { if (drag) drag.moved += Math.abs(dx) + Math.abs(dy); return; }   // the phone's motion turns the view, not drags
   if (ptr.size === 1 && drag) { drag.moved += Math.abs(dx) + Math.abs(dy); if (drag.moved > 8) { cam.yaw -= dx * .3; cam.pitch = clamp(cam.pitch + dy * .25, -5, 60); } }
   else if (ptr.size === 2) { const [a, b] = [...ptr.values()], d = Math.hypot(a.x - b.x, a.y - b.y); if (pinch0) cam.zoom = clamp(cam.zoom * pinch0 / d, .4, 2.2); pinch0 = d; }
 });
 function up(e) {
   if (!ptr.has(e.pointerId)) return; ptr.delete(e.pointerId);
-  if (drag && drag.moved <= 8 && performance.now() - drag.t < 600) tap(e.clientX, e.clientY);
+  if (drag && drag.moved <= 8 && performance.now() - drag.t < 600) (gyroOn ? gyroTap : tap)(e.clientX, e.clientY);
   drag = null; if (ptr.size < 2) pinch0 = 0;
 }
 canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', e => { ptr.delete(e.pointerId); drag = null; });
-canvas.addEventListener('wheel', e => { e.preventDefault(); cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * .001), .4, 2.2); }, { passive: false });
+canvas.addEventListener('wheel', e => { e.preventDefault(); if (gyroOn) return; cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * .001), .4, 2.2); }, { passive: false });
 function tap(x, y) {
   const n = B.S.holes.length;
   for (const dx of [0, -10, 10, -18, 18]) {                             // a finger is wide: a tap just beside the bottle still counts
@@ -118,8 +119,8 @@ const show = (id, on) => $(id).classList.toggle('hide', !on);
 function hint(s) { $('hint').textContent = s || ''; show('hint', !!s); }
 
 $('bAR').onclick = async () => {
-  if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)))
-    return toast('AR needs an Android phone with Chrome (Google Play Services for AR). iPhone Safari does not support it yet.');
+  if (!navigator.xr) return startGyro();                                // iPhone: no WebXR. Called straight from the tap so iOS can ask for motion access
+  if (!(await navigator.xr.isSessionSupported('immersive-ar').catch(() => false))) return startGyro();
   try {
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('ui') } });
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
@@ -132,8 +133,8 @@ $('bAR').onclick = async () => {
     hint('Move the phone slowly over the floor or a table. When the yellow ring appears, tap to place the bottle.');
   } catch (e) { console.warn(e); toast('Could not start AR on this phone.'); }
 };
-$('bExit').onclick = () => renderer.xr.getSession()?.end();
-$('bMove').onclick = () => { placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
+$('bExit').onclick = () => gyroOn ? stopGyro() : renderer.xr.getSession()?.end();
+$('bMove').onclick = () => { if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
 function arEnd() {
   hitSrc = null; arOn = false; placed = false; reticle.visible = false;
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
@@ -164,6 +165,73 @@ ctl.addEventListener('select', () => {
   if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);
 });
 
+// ------------------------------------------------------------------ camera + gyroscope mode (iPhone, and Android phones without AR)
+// The back camera shows the room; the phone's motion sensor turns the 3D view with the phone, so the bottle stays where you put it
+// while you turn and tilt. It does not know when you walk, so stand in one place. The floor is taken as 1.3 m below the phone.
+const vid = $('vid'), EYE = 1.3, LONG_FOV = 63;                         // LONG_FOV: field of view across the long side of a phone's main camera
+let gyroOn = false, gPlaced = false, ori = null;
+const qScreen = new THREE.Quaternion(), qX = new THREE.Quaternion(-Math.sqrt(.5), 0, 0, Math.sqrt(.5)), eul = new THREE.Euler(), ZEE = V3(0, 0, 1);
+const onOri = e => { if (e.alpha != null) ori = e; };
+async function startGyro() {
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+      if (await DeviceOrientationEvent.requestPermission() !== 'granted') return toast('Motion access is needed so the bottle can stay in place. Allow it and try again.');
+    }
+    const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    vid.srcObject = st; await vid.play();
+  } catch (e) { console.warn(e); return toast('Could not open the camera. Allow camera access and try again.'); }
+  addEventListener('deviceorientation', onOri);
+  gyroOn = true; gPlaced = false; B.group.visible = false; B.group.scale.setScalar(.01); B.group.position.set(0, 0, 0);
+  BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
+  document.body.style.background = 'transparent'; show('vid', true);
+  camera.clearViewOffset(); camera.position.set(0, EYE, 0); camera.near = .02; camera.far = 50;
+  show('bAR', false); show('bExit', true); show('bMove', false);
+  hint('Point the middle of the screen at the floor a little in front of you, then tap to put the bottle there.');
+}
+function stopGyro() {
+  removeEventListener('deviceorientation', onOri); ori = null;
+  const st = vid.srcObject; st && st.getTracks().forEach(t => t.stop()); vid.srcObject = null; show('vid', false);
+  gyroOn = false; gPlaced = false; reticle.visible = false; camera.quaternion.identity();
+  B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
+  BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
+  show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+}
+// match the 3D camera to the phone camera picture (the video is scaled to cover the screen)
+function gyroFov() {
+  const vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, f = Math.max(vw, vh) / 2 / Math.tan(THREE.MathUtils.degToRad(LONG_FOV / 2));
+  const s = Math.max(innerWidth / vw, innerHeight / vh);
+  return THREE.MathUtils.radToDeg(2 * Math.atan(innerHeight / 2 / s / f));
+}
+const floor = new THREE.Plane(V3(0, 1, 0), 0), fHit = V3(0, 0, 0), gRay = new THREE.Raycaster();
+function floorAt(x, y) {
+  gRay.setFromCamera(new THREE.Vector2(x / innerWidth * 2 - 1, -y / innerHeight * 2 + 1), camera);
+  const p = gRay.ray.intersectPlane(floor, fHit); return p && p.distanceTo(camera.position) < 6 ? p.clone() : null;
+}
+function gyroFrame() {
+  if (ori) {                                                            // device orientation -> camera rotation (same maths as three.js DeviceOrientationControls)
+    const D = THREE.MathUtils.degToRad, o = D(screen.orientation?.angle ?? window.orientation ?? 0);
+    eul.set(D(ori.beta), D(ori.alpha), -D(ori.gamma), 'YXZ'); camera.quaternion.setFromEuler(eul).multiply(qX).multiply(qScreen.setFromAxisAngle(ZEE, -o));
+  }
+  camera.aspect = innerWidth / innerHeight; camera.fov = gyroFov(); camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  if (!gPlaced) {
+    const p = floorAt(innerWidth / 2, innerHeight / 2); reticle.visible = !!p;
+    if (p) reticle.matrix.makeTranslation(p.x, p.y + .002, p.z);
+  }
+}
+function gyroTap(x, y) {
+  if (!gPlaced) {
+    if (!reticle.visible) return toast('Point the middle of the screen at the floor first.');
+    B.group.position.setFromMatrixPosition(reticle.matrix);
+    B.group.rotation.set(0, Math.atan2(camera.position.x - B.group.position.x, camera.position.z - B.group.position.z) - .5, 0);   // turned a little so side jets show
+    B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
+    sun.position.copy(B.group.position).add(V3(.6, 1.6, .9)); sun.target.position.copy(B.group.position);
+    const sc = sun.shadow.camera; sc.left = sc.bottom = -1.2; sc.right = sc.top = 1.2; sc.near = .05; sc.far = 5; sc.updateProjectionMatrix();
+    rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
+    hint(''); toast('Bottle placed. Stand still and turn the phone to look around. Tap the bottle to make holes.'); return;
+  }
+  tap(x, y);
+}
+
 // ------------------------------------------------------------------ loop
 let last = performance.now(), rdT = 0;
 function frame(now, xrFrame) {
@@ -173,12 +241,13 @@ function frame(now, xrFrame) {
     const pose = res.length && res[0].getPose(ref);
     reticle.visible = !!pose; if (pose) reticle.matrix.fromArray(pose.transform.matrix);
   }
-  if (FAUCET) FAUCET.visible = !arOn || B.S.keep;
+  if (gyroOn) gyroFrame();
+  if (FAUCET) FAUCET.visible = !(arOn || gyroOn) || B.S.keep;
   B.update(dt, now / 1000);
   rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', 'Tap the bottle to make a hole. Tap a hole to tape it.'); rdT = .25; }
-  if (!arOn) updateCamera(dt);
+  if (!arOn && !gyroOn) updateCamera(dt);
   renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(frame);
 // test hook
-window.__demo = { B, camera, tap };
+window.__demo = { B, camera, tap, startGyro, gyroTap, get gyroOn() { return gyroOn; } };

@@ -21,10 +21,12 @@
   #ui { position: fixed; inset: 0; pointer-events: none; } #ui > * { pointer-events: auto; } #ui > #toast { pointer-events: none; }
   #bAR { background: #FFD36B !important; color: #08202E !important; }
   #hint { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); background: var(--chip); padding: 10px 14px; border-radius: 14px; font-size: 14px; text-align: center; max-width: calc(100vw - 64px); }
+  #vid { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .hide { display: none !important; }
 </style>
 </head>
 <body>
+<video id="vid" class="hide" playsinline muted autoplay></video>
 <canvas id="cv"></canvas>
 <div id="ui">
   <div id="rd"></div>
