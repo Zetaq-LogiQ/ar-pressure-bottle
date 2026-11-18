@@ -114,7 +114,15 @@ catcher.rotation.x = -Math.PI / 2; catcher.position.y = .3; catcher.receiveShado
 const reticle = new THREE.Mesh(new THREE.RingGeometry(.09, .115, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#FFD36B' }));
 reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 const ctl = renderer.xr.getController(0); scene.add(ctl);
-let hitSrc = null, placed = false, arOn = false;
+let hitSrc = null, placed = false, arOn = false, arSize = 2;            // arSize: how many times real size the model is drawn in AR
+function applySize() {
+  B.group.scale.setScalar(.01 * arSize);
+  const sc = sun.shadow.camera, r = 1.2 * arSize; sc.left = sc.bottom = -r; sc.right = sc.top = r; sc.near = .05; sc.far = 5 * arSize; sc.updateProjectionMatrix();
+  sun.position.copy(B.group.position).add(V3(.6, 1.6, .9).multiplyScalar(arSize)); sun.target.position.copy(B.group.position);
+}
+$('bBig').onclick = () => { arSize = Math.min(5, arSize * 1.25); applySize(); toast('Size: ' + arSize.toFixed(1) + '× real'); };
+$('bSmall').onclick = () => { arSize = Math.max(.5, arSize / 1.25); applySize(); toast('Size: ' + arSize.toFixed(1) + '× real'); };
+const sizeBtns = on => { show('bBig', on); show('bSmall', on); };
 const show = (id, on) => $(id).classList.toggle('hide', !on);
 function hint(s) { $('hint').textContent = s || ''; show('hint', !!s); }
 
@@ -126,7 +134,7 @@ $('bAR').onclick = async () => {
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
     hitSrc = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
     session.addEventListener('end', arEnd);
-    arOn = true; placed = false; B.group.visible = false; B.group.scale.setScalar(.01);
+    arOn = true; placed = false; B.group.visible = false; applySize();
     BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
     document.body.style.background = 'transparent';
     show('bAR', false); show('bExit', true); show('bMove', false);
@@ -134,12 +142,12 @@ $('bAR').onclick = async () => {
   } catch (e) { console.warn(e); toast('Could not start AR on this phone.'); }
 };
 $('bExit').onclick = () => gyroOn ? stopGyro() : renderer.xr.getSession()?.end();
-$('bMove').onclick = () => { if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
+$('bMove').onclick = () => { sizeBtns(false); if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
 function arEnd() {
   hitSrc = null; arOn = false; placed = false; reticle.visible = false;
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
   BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
-  show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+  sizeBtns(false); show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
 }
 // taps on the buttons and the readout must not also poke the bottle
 $('ui').addEventListener('beforexrselect', e => { if (e.target.closest('button, #rd')) e.preventDefault(); });
@@ -151,8 +159,7 @@ ctl.addEventListener('select', () => {
     B.group.position.setFromMatrixPosition(reticle.matrix);
     const c = renderer.xr.getCamera().position; B.group.rotation.set(0, Math.atan2(c.x - B.group.position.x, c.z - B.group.position.z) - .5, 0);   // turned a little so side jets show
     B.group.visible = true; placed = true; reticle.visible = false; show('bMove', true);
-    sun.position.copy(B.group.position).add(V3(.6, 1.6, .9)); sun.target.position.copy(B.group.position);
-    const sc = sun.shadow.camera; sc.left = sc.bottom = -1.2; sc.right = sc.top = 1.2; sc.near = .05; sc.far = 5; sc.updateProjectionMatrix();
+    applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
     hint(''); toast('Bottle placed. Tap the bottle to make holes. Tap a hole to tape it.'); return;
   }
@@ -181,7 +188,7 @@ async function startGyro() {
     vid.srcObject = st; await vid.play();
   } catch (e) { console.warn(e); return toast('Could not open the camera. Allow camera access and try again.'); }
   addEventListener('deviceorientation', onOri);
-  gyroOn = true; gPlaced = false; B.group.visible = false; B.group.scale.setScalar(.01); B.group.position.set(0, 0, 0);
+  gyroOn = true; gPlaced = false; B.group.visible = false; B.group.position.set(0, 0, 0); applySize();
   BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
   document.body.style.background = 'transparent'; show('vid', true);
   camera.clearViewOffset(); camera.position.set(0, EYE, 0); camera.near = .02; camera.far = 50;
@@ -194,7 +201,7 @@ function stopGyro() {
   gyroOn = false; gPlaced = false; reticle.visible = false; camera.quaternion.identity();
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
   BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
-  show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+  sizeBtns(false); show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
 }
 // match the 3D camera to the phone camera picture (the video is scaled to cover the screen)
 function gyroFov() {
@@ -224,8 +231,7 @@ function gyroTap(x, y) {
     B.group.position.setFromMatrixPosition(reticle.matrix);
     B.group.rotation.set(0, Math.atan2(camera.position.x - B.group.position.x, camera.position.z - B.group.position.z) - .5, 0);   // turned a little so side jets show
     B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
-    sun.position.copy(B.group.position).add(V3(.6, 1.6, .9)); sun.target.position.copy(B.group.position);
-    const sc = sun.shadow.camera; sc.left = sc.bottom = -1.2; sc.right = sc.top = 1.2; sc.near = .05; sc.far = 5; sc.updateProjectionMatrix();
+    applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
     hint(''); toast('Bottle placed. Stand still and turn the phone to look around. Tap the bottle to make holes.'); return;
   }
