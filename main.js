@@ -80,13 +80,32 @@ function up(e) {
 }
 canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', e => { ptr.delete(e.pointerId); drag = null; });
 canvas.addEventListener('wheel', e => { e.preventDefault(); if (gyroOn) return; cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * .001), .4, 2.2); }, { passive: false });
-function tap(x, y) {
-  const n = B.S.holes.length;
-  for (const dx of [0, -10, 10, -18, 18]) {                             // a finger is wide: a tap just beside the bottle still counts
-    ray.setFromCamera(new THREE.Vector2((x + dx) / innerWidth * 2 - 1, -y / innerHeight * 2 + 1), camera);
-    if (B.pick(ray)) break;
+// where a ray meets the bottle wall (bottle cm units); a ray passing up to TOL cm beside the bottle still counts (a finger is wide)
+const Y0B = 40.4, R_WALL = 4.65, TOL = 3;
+function aimRay(r) {
+  B.group.updateMatrixWorld();
+  const inv = B.group.matrixWorld.clone().invert(), o = r.origin.clone().applyMatrix4(inv), d = r.direction.clone().transformDirection(inv);
+  const A = d.x * d.x + d.z * d.z; if (A < 1e-9) return null;
+  const Bq = 2 * (o.x * d.x + o.z * d.z), C = o.x * o.x + o.z * o.z - R_WALL * R_WALL, disc = Bq * Bq - 4 * A * C;
+  let t;
+  if (disc >= 0) t = (-Bq - Math.sqrt(disc)) / (2 * A);                 // hits the wall
+  else { t = -(o.x * d.x + o.z * d.z) / A; const q = o.clone().addScaledVector(d, t); if (Math.hypot(q.x, q.z) > R_WALL + TOL) return null; }   // near miss
+  if (t < 0) return null;
+  const p = o.clone().addScaledVector(d, t); if (p.y < Y0B + .5 || p.y > Y0B + B.HMAX) return null;
+  return { h: p.y - Y0B, th: Math.atan2(p.x, p.z) };
+}
+// act at that spot: on a hole -> tape / open it, else make a new (open) hole
+function pokeAt(a) {
+  for (const o of B.S.holes) {
+    const da = Math.abs(((o.th - a.th + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    if (Math.abs(o.h - a.h) < 1.5 && da * R_WALL < 2.2) { B.setTape(o, !o.taped); sfx(o.taped ? 'tap' : 'rip'); return true; }
   }
-  if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);   // a new hole opens at once
+  const hole = B.poke(a.h, a.th); if (hole) { B.setTape(hole, false); return true; }
+  return false;
+}
+function tap(x, y) {
+  ray.setFromCamera(new THREE.Vector2(x / innerWidth * 2 - 1, -y / innerHeight * 2 + 1), camera);
+  const a = aimRay(ray.ray); return a ? pokeAt(a) : false;
 }
 
 // ------------------------------------------------------------------ buttons
@@ -117,7 +136,7 @@ catcher.rotation.x = -Math.PI / 2; catcher.position.y = .3; catcher.receiveShado
 const reticle = new THREE.Mesh(new THREE.RingGeometry(.09, .115, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#FFD36B' }));
 reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 const ctl = renderer.xr.getController(0); scene.add(ctl);
-let hitSrc = null, placed = false, arOn = false, arSize = 2;            // arSize: how many times real size the model is drawn in AR
+let hitSrc = null, placed = false, arOn = false, arSize = 1;            // arSize: how many times real size the model is drawn in AR
 function applySize() {
   B.group.scale.setScalar(.01 * arSize);
   const sc = sun.shadow.camera, r = 1.2 * arSize; sc.left = sc.bottom = -r; sc.right = sc.top = r; sc.near = .05; sc.far = 5 * arSize; sc.updateProjectionMatrix();
@@ -136,26 +155,27 @@ $('bAR').onclick = async () => {
     const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('ui') } });
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
     hitSrc = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
-    session.addEventListener('end', arEnd);
-    arOn = true; placed = false; B.group.visible = false; applySize();
+    session.addEventListener('end', arEnd); session.addEventListener('select', onXRSelect);
+    arOn = true; placed = false; B.group.visible = false; arSize = 1; applySize();
     BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
     document.body.style.background = 'transparent';
-    show('bAR', false); show('bExit', true); show('bMove', false);
+    show('bAR', false); show('bHand', false); show('bExit', true); show('bMove', false);
     hint('Move the phone slowly over the floor or a table. When the yellow ring appears, tap to place the bottle.');
   } catch (e) { console.warn(e); toast('Could not start AR on this phone.'); }
 };
+$('bHand').onclick = () => startGyro();
 $('bExit').onclick = () => gyroOn ? stopGyro() : renderer.xr.getSession()?.end();
 $('bMove').onclick = () => { sizeBtns(false); if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
 function arEnd() {
   hitSrc = null; arOn = false; placed = false; reticle.visible = false;
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
   BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
-  sizeBtns(false); show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+  sizeBtns(false); show('bAR', true); show('bHand', true); show('bExit', false); show('bMove', false); hint(''); layout();
 }
 // taps on the buttons and the readout must not also poke the bottle
 $('ui').addEventListener('beforexrselect', e => { if (e.target.closest('button, #rd')) e.preventDefault(); });
 const m4 = new THREE.Matrix4(), xrRay = new THREE.Raycaster(), UP = V3(0, 1, 0);
-ctl.addEventListener('select', () => {
+function onXRSelect(e) {
   if (!arOn) return;
   if (!placed) {
     if (!reticle.visible) return;
@@ -166,14 +186,12 @@ ctl.addEventListener('select', () => {
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
     hint(''); toast('Bottle placed. Tap the bottle to make holes. Tap a hole to tape it.'); return;
   }
-  m4.identity().extractRotation(ctl.matrixWorld);
-  const o = V3(0, 0, 0).setFromMatrixPosition(ctl.matrixWorld), d = V3(0, 0, -1).applyMatrix4(m4);
-  const n = B.S.holes.length;
-  for (const a of [0, -.02, .02, -.035, .035]) {                       // a finger is wide: a tap just beside the bottle still counts
-    xrRay.set(o, d.clone().applyAxisAngle(UP, a)); if (B.pick(xrRay)) break;
-  }
-  if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);
-});
+  const pose = e.frame && e.frame.getPose(e.inputSource.targetRaySpace, renderer.xr.getReferenceSpace());   // the tap's ray at the moment of the tap
+  if (!pose) return;
+  m4.fromArray(pose.transform.matrix);
+  const a = aimRay(new THREE.Ray(V3(0, 0, 0).setFromMatrixPosition(m4), V3(0, 0, -1).transformDirection(m4)));
+  if (a) pokeAt(a);
+}
 
 // ------------------------------------------------------------------ camera + gyroscope mode (iPhone, and Android phones without AR)
 // The back camera shows the room; the phone's motion sensor turns the 3D view with the phone, so the bottle stays where you put it
@@ -191,20 +209,20 @@ async function startGyro() {
     vid.srcObject = st; await vid.play();
   } catch (e) { console.warn(e); return toast('Could not open the camera. Allow camera access and try again.'); }
   addEventListener('deviceorientation', onOri); loadHand();
-  gyroOn = true; gPlaced = false; B.group.visible = false; B.group.position.set(0, 0, 0); applySize();
+  gyroOn = true; gPlaced = false; B.group.visible = false; B.group.position.set(0, 0, 0); arSize = 2; applySize();
   BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
   document.body.style.background = 'transparent'; show('vid', true);
   camera.clearViewOffset(); camera.position.set(0, EYE, 0); camera.near = .02; camera.far = 50;
-  show('bAR', false); show('bExit', true); show('bMove', false);
+  show('bAR', false); show('bHand', false); show('bExit', true); show('bMove', false);
   hint('Point the middle of the screen at the floor a little in front of you, then tap (or pinch) to put the bottle there.');
 }
 function stopGyro() {
-  removeEventListener('deviceorientation', onOri); ori = null; pinchPt = null; pinchOn = false; show('hand', false);
+  removeEventListener('deviceorientation', onOri); ori = null; pinchPt = tipPt = null; pinchOn = false; dwell = 0; show('hand', false);
   const st = vid.srcObject; st && st.getTracks().forEach(t => t.stop()); vid.srcObject = null; show('vid', false);
   gyroOn = false; gPlaced = false; reticle.visible = false; camera.quaternion.identity();
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
   BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
-  sizeBtns(false); show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+  sizeBtns(false); show('bAR', true); show('bHand', true); show('bExit', false); show('bMove', false); hint(''); layout();
 }
 // match the 3D camera to the phone camera picture (the video is scaled to cover the screen)
 function gyroFov() {
@@ -236,7 +254,7 @@ function gyroTap(x, y) {
     B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
     applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
-    hint(''); toast('Bottle placed. Pinch on the bottle (or tap it) to make holes. Swipe sideways to spin it.'); return;
+    hint(''); toast('Bottle placed. Touch the bottle with your fingertip and hold, or tap it. Swipe sideways to spin it.'); return;
   }
   tap(x, y);
 }
@@ -244,7 +262,9 @@ function gyroTap(x, y) {
 // ------------------------------------------------------------------ your hand in front of the back camera (camera + gyroscope mode)
 // MediaPipe finds the hand in the camera picture. A pinch (thumb tip touches index tip) acts like a tap at that spot:
 // on the floor it places the bottle, on the bottle it makes a hole, on a hole it tapes / opens it.
-let hand = null, handBusy = false, handT = 0, pinchOn = false, pinchPt = null, handSeen = 0;
+let hand = null, handBusy = false, handT = 0, pinchOn = false, pinchPt = null, handSeen = 0, handCPU = false, handErr = 0;
+let tipPt = null, dwell = 0, dwellAt = null, cool = 0;
+const DWELL = .5, handRay = new THREE.Raycaster();
 async function loadHand() {
   if (hand || handBusy) return; handBusy = true; handStatus('Loading hand tracking…');
   try {
@@ -252,7 +272,8 @@ async function loadHand() {
     const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
     const fs = await FilesetResolver.forVisionTasks(V + '/wasm');
     const opts = d => ({ baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: d }, runningMode: 'VIDEO', numHands: 1, minHandDetectionConfidence: .4, minTrackingConfidence: .4 });
-    hand = await HandLandmarker.createFromOptions(fs, opts('GPU')).catch(() => HandLandmarker.createFromOptions(fs, opts('CPU')));
+    hand = handCPU ? await HandLandmarker.createFromOptions(fs, opts('CPU'))
+                   : await HandLandmarker.createFromOptions(fs, opts('GPU')).catch(() => { handCPU = true; return HandLandmarker.createFromOptions(fs, opts('CPU')); });
     handStatus('Show your hand to the camera');
   } catch (e) { console.warn(e); handStatus('Hand tracking could not load. Use screen taps.'); }
   handBusy = false;
@@ -264,27 +285,48 @@ function vidToScreen(lm) {
   return { x: (W - dw) / 2 + lm.x * dw, y: (H - dh) / 2 + lm.y * dh };
 }
 function handStep(now) {
-  if (!hand || vid.readyState < 2 || now - handT < 60) return; handT = now;   // about 15 checks a second: keeps up on a phone
-  let r; try { r = hand.detectForVideo(vid, now); } catch (e) { return; }
+  if (!hand || vid.readyState < 2 || now - handT < 60) return;
+  const step = Math.min(.2, (now - handT) / 1000); handT = now;         // about 15 checks a second: keeps up on a phone
+  let r;
+  try { r = hand.detectForVideo(vid, now); handErr = 0; }
+  catch (e) {                                                           // some phones fail on the GPU path: switch to the CPU one
+    console.warn(e);
+    if (++handErr > 5 && !handCPU) { handCPU = true; try { hand.close(); } catch (_) { } hand = null; handStatus('Switching hand tracking to safe mode…'); loadHand(); }
+    else handStatus('Hand tracking error: ' + (e.message || e).toString().slice(0, 40));
+    return;
+  }
+  cool = Math.max(0, cool - step);
   const L = r.landmarks && r.landmarks[0];
-  if (!L) { if (now - handSeen > 400) { pinchPt = null; pinchOn = false; handStatus('Show your hand to the camera'); } return; }
+  if (!L) { if (now - handSeen > 400) { pinchPt = tipPt = null; pinchOn = false; dwell = 0; handStatus('Show your hand to the camera'); } return; }
   handSeen = now;
+  // fingertip on the bottle: hold it there for half a second to poke (or tape / open a hole)
+  const tp = vidToScreen(L[8]);
+  tipPt = tipPt ? { x: tipPt.x + (tp.x - tipPt.x) * .6, y: tipPt.y + (tp.y - tipPt.y) * .6 } : tp;
+  let aim = null;
+  if (gPlaced) { handRay.setFromCamera(new THREE.Vector2(tipPt.x / innerWidth * 2 - 1, -tipPt.y / innerHeight * 2 + 1), camera); aim = aimRay(handRay.ray); }
+  if (aim && cool === 0) {
+    if (dwellAt && Math.hypot(tipPt.x - dwellAt.x, tipPt.y - dwellAt.y) > 40) dwell = 0;
+    if (dwell === 0) dwellAt = { ...tipPt };
+    dwell += step;
+    if (dwell >= DWELL) { pokeAt(aim); dwell = 0; cool = 1; }
+  } else dwell = 0;
   const d = (a, b) => Math.hypot(L[a].x - L[b].x, L[a].y - L[b].y), size = d(0, 9) || 1, gap = d(4, 8) / size;
   const a = vidToScreen(L[4]), b = vidToScreen(L[8]), p = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   pinchPt = pinchPt ? { x: pinchPt.x + (p.x - pinchPt.x) * .6, y: pinchPt.y + (p.y - pinchPt.y) * .6 } : p;
   if (!pinchOn && gap < .28) { pinchOn = true; gyroTap(pinchPt.x, pinchPt.y); sfx('poke'); }          // pinch closes: act once
   else if (pinchOn && gap > .45) pinchOn = false;                                                    // pinch opens again: ready for the next one
-  handStatus(pinchOn ? 'Pinch' : 'Hand found: pinch to poke');
+  handStatus(!gPlaced ? 'Hand found. Place the bottle first' : aim ? 'On the bottle: hold still…' : 'Hand found: touch the bottle');
 }
 const fxC = $('fx'), fx2 = fxC.getContext('2d');
 function drawHand() {
   const k = Math.min(2, devicePixelRatio || 1), W = innerWidth, H = innerHeight;
   if (fxC.width !== Math.round(W * k)) { fxC.width = Math.round(W * k); fxC.height = Math.round(H * k); }
   fx2.setTransform(k, 0, 0, k, 0, 0); fx2.clearRect(0, 0, W, H);
-  if (!gyroOn || !pinchPt) return;
-  fx2.beginPath(); fx2.arc(pinchPt.x, pinchPt.y, pinchOn ? 13 : 10, 0, Math.PI * 2);
-  fx2.fillStyle = pinchOn ? 'rgba(120,230,140,.9)' : 'rgba(127,224,255,.75)'; fx2.fill();
+  if (!gyroOn || !tipPt) return;
+  fx2.beginPath(); fx2.arc(tipPt.x, tipPt.y, pinchOn ? 13 : 10, 0, Math.PI * 2);   // your fingertip as the phone sees it
+  fx2.fillStyle = pinchOn ? 'rgba(120,230,140,.9)' : 'rgba(127,224,255,.8)'; fx2.fill();
   fx2.lineWidth = 3; fx2.strokeStyle = '#fff'; fx2.stroke();
+  if (dwell > 0) { fx2.beginPath(); fx2.arc(tipPt.x, tipPt.y, 22, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * dwell / DWELL); fx2.lineWidth = 5; fx2.strokeStyle = '#FFD36B'; fx2.stroke(); }
 }
 
 // ------------------------------------------------------------------ loop
