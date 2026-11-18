@@ -22,16 +22,20 @@
   #bAR { background: #FFD36B !important; color: #08202E !important; }
   #hint { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); background: var(--chip); padding: 10px 14px; border-radius: 14px; font-size: 14px; text-align: center; max-width: calc(100vw - 64px); }
   #vid { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #hand { position: fixed; right: 12px; top: max(12px, env(safe-area-inset-top)); background: var(--chip); padding: 5px 10px; border-radius: 999px; font-size: 12px; }
   .hide { display: none !important; }
 </style>
 </head>
 <body>
 <video id="vid" class="hide" playsinline muted autoplay></video>
 <canvas id="cv"></canvas>
+<canvas id="fx"></canvas>
 <div id="ui">
   <div id="rd"></div>
   <div id="hint" class="hide"></div>
   <div id="toast"></div>
+  <div id="hand" class="hide"></div>
   <div id="bar">
     <button id="bAR">Place in my room (AR)</button>
     <button id="bSmall" class="hide">Smaller</button>

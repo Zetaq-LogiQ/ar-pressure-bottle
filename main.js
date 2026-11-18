@@ -187,16 +187,16 @@ async function startGyro() {
     const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     vid.srcObject = st; await vid.play();
   } catch (e) { console.warn(e); return toast('Could not open the camera. Allow camera access and try again.'); }
-  addEventListener('deviceorientation', onOri);
+  addEventListener('deviceorientation', onOri); loadHand();
   gyroOn = true; gPlaced = false; B.group.visible = false; B.group.position.set(0, 0, 0); applySize();
   BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
   document.body.style.background = 'transparent'; show('vid', true);
   camera.clearViewOffset(); camera.position.set(0, EYE, 0); camera.near = .02; camera.far = 50;
   show('bAR', false); show('bExit', true); show('bMove', false);
-  hint('Point the middle of the screen at the floor a little in front of you, then tap to put the bottle there.');
+  hint('Point the middle of the screen at the floor a little in front of you, then tap (or pinch) to put the bottle there.');
 }
 function stopGyro() {
-  removeEventListener('deviceorientation', onOri); ori = null;
+  removeEventListener('deviceorientation', onOri); ori = null; pinchPt = null; pinchOn = false; show('hand', false);
   const st = vid.srcObject; st && st.getTracks().forEach(t => t.stop()); vid.srcObject = null; show('vid', false);
   gyroOn = false; gPlaced = false; reticle.visible = false; camera.quaternion.identity();
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
@@ -233,9 +233,55 @@ function gyroTap(x, y) {
     B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
     applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
-    hint(''); toast('Bottle placed. Stand still and turn the phone to look around. Tap the bottle to make holes.'); return;
+    hint(''); toast('Bottle placed. Pinch your fingers on the bottle (or tap it) to make holes.'); return;
   }
   tap(x, y);
+}
+
+// ------------------------------------------------------------------ your hand in front of the back camera (camera + gyroscope mode)
+// MediaPipe finds the hand in the camera picture. A pinch (thumb tip touches index tip) acts like a tap at that spot:
+// on the floor it places the bottle, on the bottle it makes a hole, on a hole it tapes / opens it.
+let hand = null, handBusy = false, handT = 0, pinchOn = false, pinchPt = null, handSeen = 0;
+async function loadHand() {
+  if (hand || handBusy) return; handBusy = true; handStatus('Loading hand tracking…');
+  try {
+    const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
+    const fs = await FilesetResolver.forVisionTasks(V + '/wasm');
+    const opts = d => ({ baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: d }, runningMode: 'VIDEO', numHands: 1, minHandDetectionConfidence: .4, minTrackingConfidence: .4 });
+    hand = await HandLandmarker.createFromOptions(fs, opts('GPU')).catch(() => HandLandmarker.createFromOptions(fs, opts('CPU')));
+    handStatus('Show your hand to the camera');
+  } catch (e) { console.warn(e); handStatus('Hand tracking could not load. Use screen taps.'); }
+  handBusy = false;
+}
+function handStatus(t) { $('hand').textContent = t; show('hand', gyroOn && !!t); }
+// camera picture (0..1) -> screen pixels; the back camera is not mirrored, the video covers the screen
+function vidToScreen(lm) {
+  const W = innerWidth, H = innerHeight, vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  return { x: (W - dw) / 2 + lm.x * dw, y: (H - dh) / 2 + lm.y * dh };
+}
+function handStep(now) {
+  if (!hand || vid.readyState < 2 || now - handT < 60) return; handT = now;   // about 15 checks a second: keeps up on a phone
+  let r; try { r = hand.detectForVideo(vid, now); } catch (e) { return; }
+  const L = r.landmarks && r.landmarks[0];
+  if (!L) { if (now - handSeen > 400) { pinchPt = null; pinchOn = false; handStatus('Show your hand to the camera'); } return; }
+  handSeen = now;
+  const d = (a, b) => Math.hypot(L[a].x - L[b].x, L[a].y - L[b].y), size = d(0, 9) || 1, gap = d(4, 8) / size;
+  const a = vidToScreen(L[4]), b = vidToScreen(L[8]), p = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  pinchPt = pinchPt ? { x: pinchPt.x + (p.x - pinchPt.x) * .6, y: pinchPt.y + (p.y - pinchPt.y) * .6 } : p;
+  if (!pinchOn && gap < .28) { pinchOn = true; gyroTap(pinchPt.x, pinchPt.y); sfx('poke'); }          // pinch closes: act once
+  else if (pinchOn && gap > .45) pinchOn = false;                                                    // pinch opens again: ready for the next one
+  handStatus(pinchOn ? 'Pinch' : 'Hand found: pinch to poke');
+}
+const fxC = $('fx'), fx2 = fxC.getContext('2d');
+function drawHand() {
+  const k = Math.min(2, devicePixelRatio || 1), W = innerWidth, H = innerHeight;
+  if (fxC.width !== Math.round(W * k)) { fxC.width = Math.round(W * k); fxC.height = Math.round(H * k); }
+  fx2.setTransform(k, 0, 0, k, 0, 0); fx2.clearRect(0, 0, W, H);
+  if (!gyroOn || !pinchPt) return;
+  fx2.beginPath(); fx2.arc(pinchPt.x, pinchPt.y, pinchOn ? 13 : 10, 0, Math.PI * 2);
+  fx2.fillStyle = pinchOn ? 'rgba(120,230,140,.9)' : 'rgba(127,224,255,.75)'; fx2.fill();
+  fx2.lineWidth = 3; fx2.strokeStyle = '#fff'; fx2.stroke();
 }
 
 // ------------------------------------------------------------------ loop
@@ -247,12 +293,12 @@ function frame(now, xrFrame) {
     const pose = res.length && res[0].getPose(ref);
     reticle.visible = !!pose; if (pose) reticle.matrix.fromArray(pose.transform.matrix);
   }
-  if (gyroOn) gyroFrame();
+  if (gyroOn) { gyroFrame(); handStep(now); }
   if (FAUCET) FAUCET.visible = !(arOn || gyroOn) || B.S.keep;
   B.update(dt, now / 1000);
   rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', 'Tap the bottle to make a hole. Tap a hole to tape it.'); rdT = .25; }
   if (!arOn && !gyroOn) updateCamera(dt);
-  renderer.render(scene, camera);
+  renderer.render(scene, camera); drawHand();
 }
 renderer.setAnimationLoop(frame);
 // test hook
