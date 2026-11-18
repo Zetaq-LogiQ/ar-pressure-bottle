@@ -152,10 +152,11 @@ $('bAR').onclick = async () => {
   if (!navigator.xr) return startGyro();                                // iPhone: no WebXR. Called straight from the tap so iOS can ask for motion access
   if (!(await navigator.xr.isSessionSupported('immersive-ar').catch(() => false))) return startGyro();
   try {
-    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('ui') } });
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay', 'camera-access'], domOverlay: { root: $('ui') } });
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
     hitSrc = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
     session.addEventListener('end', arEnd); session.addEventListener('select', onXRSelect);
+    arHandOK = !!(session.enabledFeatures && session.enabledFeatures.includes('camera-access')); glBind = null; camFB = null;
     arOn = true; placed = false; B.group.visible = false; arSize = 1; applySize();
     BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
     document.body.style.background = 'transparent';
@@ -165,9 +166,9 @@ $('bAR').onclick = async () => {
 };
 $('bHand').onclick = () => startGyro();
 $('bExit').onclick = () => gyroOn ? stopGyro() : renderer.xr.getSession()?.end();
-$('bMove').onclick = () => { sizeBtns(false); if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
+$('bMove').onclick = () => { sizeBtns(false); show('fit', false); if (gyroOn) { gPlaced = false; B.group.visible = false; show('bMove', false); hint('Point the middle of the screen at the floor, then tap to put the bottle there.'); return; } placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
 function arEnd() {
-  hitSrc = null; arOn = false; placed = false; reticle.visible = false;
+  hitSrc = null; arOn = false; arHandOK = false; tipPt = pinchPt = null; dwell = 0; show('hand', false); placed = false; reticle.visible = false;
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
   BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
   sizeBtns(false); show('bAR', true); show('bHand', true); show('bExit', false); show('bMove', false); hint(''); layout();
@@ -184,7 +185,8 @@ function onXRSelect(e) {
     B.group.visible = true; placed = true; reticle.visible = false; show('bMove', true);
     applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
-    hint(''); toast('Bottle placed. Tap the bottle to make holes. Tap a hole to tape it.'); return;
+    hint(''); toast(arHandOK ? 'Bottle placed. Touch it with your fingertip and hold, or tap it.' : 'Bottle placed. Tap the bottle to make holes. Tap a hole to tape it.');
+    if (arHandOK) loadHand(); else handStatus('Hand needs a newer Chrome: use taps'); return;
   }
   const pose = e.frame && e.frame.getPose(e.inputSource.targetRaySpace, renderer.xr.getReferenceSpace());   // the tap's ray at the moment of the tap
   if (!pose) return;
@@ -196,10 +198,25 @@ function onXRSelect(e) {
 // ------------------------------------------------------------------ camera + gyroscope mode (iPhone, and Android phones without AR)
 // The back camera shows the room; the phone's motion sensor turns the 3D view with the phone, so the bottle stays where you put it
 // while you turn and tilt. It does not know when you walk, so stand in one place. The floor is taken as 1.3 m below the phone.
-const vid = $('vid'), EYE = 1.3, LONG_FOV = 63;                         // LONG_FOV: field of view across the long side of a phone's main camera
+const vid = $('vid'), EYE = 1.3;
+let longFov = 63;                                                       // field of view across the long side of the phone's main camera (Camera fit slider)
+try { const f = +localStorage.getItem('pb_fov'); if (f >= 45 && f <= 85) longFov = f; } catch (e) { }
+$('fitR').value = longFov;
+$('fitR').oninput = e => { longFov = +e.target.value; try { localStorage.setItem('pb_fov', longFov); } catch (_) { } };
 let gyroOn = false, gPlaced = false, ori = null;
 const qScreen = new THREE.Quaternion(), qX = new THREE.Quaternion(-Math.sqrt(.5), 0, 0, Math.sqrt(.5)), eul = new THREE.Euler(), ZEE = V3(0, 0, 1);
 const onOri = e => { if (e.alpha != null) ori = e; };
+// Android: RelativeOrientationSensor (gyroscope + accelerometer, no compass) is smoother than deviceorientation
+let sensor = null, sensQ = null; const qFix = new THREE.Quaternion().setFromAxisAngle(V3(1, 0, 0), -Math.PI / 2), qT = new THREE.Quaternion();
+function startSensor() {
+  if (typeof RelativeOrientationSensor === 'undefined') return;
+  try {
+    sensor = new RelativeOrientationSensor({ frequency: 60, referenceFrame: 'screen' });
+    sensor.addEventListener('reading', () => { sensQ = sensor && sensor.quaternion; });
+    sensor.addEventListener('error', e => { console.warn(e.error); sensor = null; sensQ = null; });
+    sensor.start();
+  } catch (e) { console.warn(e); sensor = null; }
+}
 async function startGyro() {
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
@@ -208,7 +225,7 @@ async function startGyro() {
     const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     vid.srcObject = st; await vid.play();
   } catch (e) { console.warn(e); return toast('Could not open the camera. Allow camera access and try again.'); }
-  addEventListener('deviceorientation', onOri); loadHand();
+  addEventListener('deviceorientation', onOri); startSensor(); loadHand();
   gyroOn = true; gPlaced = false; B.group.visible = false; B.group.position.set(0, 0, 0); arSize = 2; applySize();
   BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
   document.body.style.background = 'transparent'; show('vid', true);
@@ -217,7 +234,7 @@ async function startGyro() {
   hint('Point the middle of the screen at the floor a little in front of you, then tap (or pinch) to put the bottle there.');
 }
 function stopGyro() {
-  removeEventListener('deviceorientation', onOri); ori = null; pinchPt = tipPt = null; pinchOn = false; dwell = 0; show('hand', false);
+  removeEventListener('deviceorientation', onOri); ori = null; try { sensor && sensor.stop(); } catch (e) { } sensor = null; sensQ = null; show('fit', false); pinchPt = tipPt = null; pinchOn = false; dwell = 0; show('hand', false);
   const st = vid.srcObject; st && st.getTracks().forEach(t => t.stop()); vid.srcObject = null; show('vid', false);
   gyroOn = false; gPlaced = false; reticle.visible = false; camera.quaternion.identity();
   B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
@@ -226,7 +243,7 @@ function stopGyro() {
 }
 // match the 3D camera to the phone camera picture (the video is scaled to cover the screen)
 function gyroFov() {
-  const vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, f = Math.max(vw, vh) / 2 / Math.tan(THREE.MathUtils.degToRad(LONG_FOV / 2));
+  const vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, f = Math.max(vw, vh) / 2 / Math.tan(THREE.MathUtils.degToRad(longFov / 2));
   const s = Math.max(innerWidth / vw, innerHeight / vh);
   return THREE.MathUtils.radToDeg(2 * Math.atan(innerHeight / 2 / s / f));
 }
@@ -236,10 +253,13 @@ function floorAt(x, y) {
   const p = gRay.ray.intersectPlane(floor, fHit); return p && p.distanceTo(camera.position) < 6 ? p.clone() : null;
 }
 function gyroFrame() {
-  if (ori) {                                                            // device orientation -> camera rotation (same maths as three.js DeviceOrientationControls)
+  let got = false;
+  if (sensQ) { qT.fromArray(sensQ).premultiply(qFix); got = true; }      // sensor frame: screen axes in a z-up world -> three.js y-up world
+  else if (ori) {                                                       // device orientation -> camera rotation (same maths as three.js DeviceOrientationControls)
     const D = THREE.MathUtils.degToRad, o = D(screen.orientation?.angle ?? window.orientation ?? 0);
-    eul.set(D(ori.beta), D(ori.alpha), -D(ori.gamma), 'YXZ'); camera.quaternion.setFromEuler(eul).multiply(qX).multiply(qScreen.setFromAxisAngle(ZEE, -o));
+    eul.set(D(ori.beta), D(ori.alpha), -D(ori.gamma), 'YXZ'); qT.setFromEuler(eul).multiply(qX).multiply(qScreen.setFromAxisAngle(ZEE, -o)); got = true;
   }
+  if (got) { if (camera.quaternion.angleTo(qT) > .5) camera.quaternion.copy(qT); else camera.quaternion.slerp(qT, sensQ ? .85 : .5); }   // light smoothing takes out the shake
   camera.aspect = innerWidth / innerHeight; camera.fov = gyroFov(); camera.updateProjectionMatrix(); camera.updateMatrixWorld();
   if (!gPlaced) {
     const p = floorAt(innerWidth / 2, innerHeight / 2); reticle.visible = !!p;
@@ -251,7 +271,7 @@ function gyroTap(x, y) {
     if (!reticle.visible) return toast('Point the middle of the screen at the floor first.');
     B.group.position.setFromMatrixPosition(reticle.matrix);
     B.group.rotation.set(0, Math.atan2(camera.position.x - B.group.position.x, camera.position.z - B.group.position.z) - .5, 0);   // turned a little so side jets show
-    B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
+    B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true); show('fit', true);
     applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
     hint(''); toast('Bottle placed. Touch the bottle with your fingertip and hold, or tap it. Swipe sideways to spin it.'); return;
@@ -259,11 +279,12 @@ function gyroTap(x, y) {
   tap(x, y);
 }
 
-// ------------------------------------------------------------------ your hand in front of the back camera (camera + gyroscope mode)
-// MediaPipe finds the hand in the camera picture. A pinch (thumb tip touches index tip) acts like a tap at that spot:
-// on the floor it places the bottle, on the bottle it makes a hole, on a hole it tapes / opens it.
+// ------------------------------------------------------------------ your hand in front of the back camera
+// MediaPipe finds the hand in the camera picture. Hold your fingertip on the bottle for half a second to poke a hole
+// (or tape / open a hole there). A pinch (thumb tip touches index tip) acts like a tap at that spot.
+// Two camera sources: "Use my hand" mode reads the <video>; Android's full AR reads the AR camera picture (WebXR camera-access).
 let hand = null, handBusy = false, handT = 0, pinchOn = false, pinchPt = null, handSeen = 0, handCPU = false, handErr = 0;
-let tipPt = null, dwell = 0, dwellAt = null, cool = 0;
+let tipPt = null, dwell = 0, dwellAt = null, cool = 0, arHandOK = false;
 const DWELL = .5, handRay = new THREE.Raycaster();
 async function loadHand() {
   if (hand || handBusy) return; handBusy = true; handStatus('Loading hand tracking…');
@@ -278,32 +299,25 @@ async function loadHand() {
   } catch (e) { console.warn(e); handStatus('Hand tracking could not load. Use screen taps.'); }
   handBusy = false;
 }
-function handStatus(t) { $('hand').textContent = t; show('hand', gyroOn && !!t); }
-// camera picture (0..1) -> screen pixels; the back camera is not mirrored, the video covers the screen
-function vidToScreen(lm) {
-  const W = innerWidth, H = innerHeight, vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
-  return { x: (W - dw) / 2 + lm.x * dw, y: (H - dh) / 2 + lm.y * dh };
-}
-function handStep(now) {
-  if (!hand || vid.readyState < 2 || now - handT < 60) return;
-  const step = Math.min(.2, (now - handT) / 1000); handT = now;         // about 15 checks a second: keeps up on a phone
-  let r;
-  try { r = hand.detectForVideo(vid, now); handErr = 0; }
+function handStatus(t) { $('hand').textContent = t; show('hand', (gyroOn || arOn) && !!t); }
+function detect(src, now) {
+  try { const r = hand.detectForVideo(src, now); handErr = 0; return r; }
   catch (e) {                                                           // some phones fail on the GPU path: switch to the CPU one
     console.warn(e);
     if (++handErr > 5 && !handCPU) { handCPU = true; try { hand.close(); } catch (_) { } hand = null; handStatus('Switching hand tracking to safe mode…'); loadHand(); }
     else handStatus('Hand tracking error: ' + (e.message || e).toString().slice(0, 40));
-    return;
+    return null;
   }
+}
+// shared: landmarks -> fingertip dot, hold-to-poke, pinch. toScr maps picture (0..1) to screen px; rayAt(pt) gives the world ray there.
+function handLogic(r, now, step, toScr, rayAt, ready, act) {
   cool = Math.max(0, cool - step);
-  const L = r.landmarks && r.landmarks[0];
+  const L = r && r.landmarks && r.landmarks[0];
   if (!L) { if (now - handSeen > 400) { pinchPt = tipPt = null; pinchOn = false; dwell = 0; handStatus('Show your hand to the camera'); } return; }
   handSeen = now;
-  // fingertip on the bottle: hold it there for half a second to poke (or tape / open a hole)
-  const tp = vidToScreen(L[8]);
+  const tp = toScr(L[8]);
   tipPt = tipPt ? { x: tipPt.x + (tp.x - tipPt.x) * .6, y: tipPt.y + (tp.y - tipPt.y) * .6 } : tp;
-  let aim = null;
-  if (gPlaced) { handRay.setFromCamera(new THREE.Vector2(tipPt.x / innerWidth * 2 - 1, -tipPt.y / innerHeight * 2 + 1), camera); aim = aimRay(handRay.ray); }
+  const aim = ready ? aimRay(rayAt(tipPt)) : null;
   if (aim && cool === 0) {
     if (dwellAt && Math.hypot(tipPt.x - dwellAt.x, tipPt.y - dwellAt.y) > 40) dwell = 0;
     if (dwell === 0) dwellAt = { ...tipPt };
@@ -311,18 +325,81 @@ function handStep(now) {
     if (dwell >= DWELL) { pokeAt(aim); dwell = 0; cool = 1; }
   } else dwell = 0;
   const d = (a, b) => Math.hypot(L[a].x - L[b].x, L[a].y - L[b].y), size = d(0, 9) || 1, gap = d(4, 8) / size;
-  const a = vidToScreen(L[4]), b = vidToScreen(L[8]), p = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const a = toScr(L[4]), b = toScr(L[8]), p = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   pinchPt = pinchPt ? { x: pinchPt.x + (p.x - pinchPt.x) * .6, y: pinchPt.y + (p.y - pinchPt.y) * .6 } : p;
-  if (!pinchOn && gap < .28) { pinchOn = true; gyroTap(pinchPt.x, pinchPt.y); sfx('poke'); }          // pinch closes: act once
+  if (!pinchOn && gap < .28) { pinchOn = true; act(pinchPt); sfx('poke'); }                         // pinch closes: act once
   else if (pinchOn && gap > .45) pinchOn = false;                                                    // pinch opens again: ready for the next one
-  handStatus(!gPlaced ? 'Hand found. Place the bottle first' : aim ? 'On the bottle: hold still…' : 'Hand found: touch the bottle');
+  handStatus(!ready ? 'Hand found. Place the bottle first' : aim ? 'On the bottle: hold still…' : 'Hand found: touch the bottle');
 }
+
+// "Use my hand" mode: the <video> covers the screen, the back camera is not mirrored
+function vidToScreen(lm) {
+  const W = innerWidth, H = innerHeight, vw = vid.videoWidth || 720, vh = vid.videoHeight || 1280, s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  return { x: (W - dw) / 2 + lm.x * dw, y: (H - dh) / 2 + lm.y * dh };
+}
+function handStep(now) {
+  if (!hand || vid.readyState < 2 || now - handT < 60) return;
+  const step = Math.min(.2, (now - handT) / 1000); handT = now;         // about 15 checks a second: keeps up on a phone
+  const r = detect(vid, now); if (!r) return;
+  handLogic(r, now, step, vidToScreen,
+    pt => { handRay.setFromCamera(new THREE.Vector2(pt.x / innerWidth * 2 - 1, -pt.y / innerHeight * 2 + 1), camera); return handRay.ray; },
+    gPlaced, pt => gyroTap(pt.x, pt.y));
+}
+
+// Android full AR: copy the AR camera picture (a GPU texture) into a small canvas for MediaPipe, about 11 times a second
+const gl = renderer.getContext(); let glBind = null, camFB = null, camProg = null, camBuf = null, camPix = null, camCv = null, camCtx = null, camW = 0, camH = 0;
+function camSetup(w, h) {
+  camW = 256; camH = Math.max(64, Math.round(256 * h / w));
+  const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+  camProg = gl.createProgram();
+  gl.attachShader(camProg, sh(gl.VERTEX_SHADER, 'attribute vec2 p; varying vec2 uv; void main(){ uv = p * .5 + .5; gl_Position = vec4(p, 0., 1.); }'));
+  gl.attachShader(camProg, sh(gl.FRAGMENT_SHADER, 'precision mediump float; uniform sampler2D t; varying vec2 uv; void main(){ gl_FragColor = texture2D(t, vec2(uv.x, 1. - uv.y)); }'));   // flipped: rows come out top first
+  gl.linkProgram(camProg);
+  camBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, camBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const out = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, out); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, camW, camH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  camFB = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, camFB); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, out, 0);
+  camPix = new Uint8ClampedArray(camW * camH * 4); camCv = document.createElement('canvas'); camCv.width = camW; camCv.height = camH; camCtx = camCv.getContext('2d');
+}
+const Pm = new THREE.Matrix4(), Vm = new THREE.Matrix4();
+function arHandStep(now, xrFrame) {
+  if (!hand || !arHandOK || now - handT < 90) return;
+  const view = xrFrame.getViewerPose(renderer.xr.getReferenceSpace())?.views[0];
+  if (!view || !view.camera) return;
+  const step = Math.min(.2, (now - handT) / 1000); handT = now;
+  try {
+    glBind = glBind || new XRWebGLBinding(renderer.xr.getSession(), gl);
+    const tex = glBind.getCameraImage(view.camera); if (!tex) return;
+    if (!camFB) camSetup(view.camera.width, view.camera.height);
+    if (gl.bindVertexArray) gl.bindVertexArray(null);                  // keep three.js' own vertex state untouched
+    gl.bindFramebuffer(gl.FRAMEBUFFER, camFB); gl.viewport(0, 0, camW, camH);
+    gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE); gl.disable(gl.SCISSOR_TEST);
+    gl.useProgram(camProg); gl.bindBuffer(gl.ARRAY_BUFFER, camBuf);
+    const loc = gl.getAttribLocation(camProg, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(gl.getUniformLocation(camProg, 't'), 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.readPixels(0, 0, camW, camH, gl.RGBA, gl.UNSIGNED_BYTE, camPix);
+    gl.disableVertexAttribArray(loc);
+  } catch (e) { console.warn(e); renderer.resetState(); handStatus('Hand: no camera picture in AR. Use taps.'); arHandOK = false; return; }
+  renderer.resetState();                                                // three.js re-binds everything it needs for its own drawing
+  camCtx.putImageData(new ImageData(camPix, camW, camH), 0, 0);
+  Pm.fromArray(view.projectionMatrix).invert(); Vm.fromArray(view.transform.matrix);
+  const rayAt = pt => {                                                 // screen px -> world ray through the AR camera
+    const o = V3(0, 0, 0).setFromMatrixPosition(Vm);
+    const q = V3(pt.x / innerWidth * 2 - 1, -pt.y / innerHeight * 2 + 1, .5).applyMatrix4(Pm).applyMatrix4(Vm);
+    return new THREE.Ray(o, q.sub(o).normalize());
+  };
+  const r = detect(camCv, now); if (!r) return;
+  handLogic(r, now, step, lm => ({ x: lm.x * innerWidth, y: lm.y * innerHeight }), rayAt, placed,
+    pt => { const a = aimRay(rayAt(pt)); if (a) pokeAt(a); });
+}
+
 const fxC = $('fx'), fx2 = fxC.getContext('2d');
 function drawHand() {
   const k = Math.min(2, devicePixelRatio || 1), W = innerWidth, H = innerHeight;
   if (fxC.width !== Math.round(W * k)) { fxC.width = Math.round(W * k); fxC.height = Math.round(H * k); }
   fx2.setTransform(k, 0, 0, k, 0, 0); fx2.clearRect(0, 0, W, H);
-  if (!gyroOn || !tipPt) return;
+  if (!(gyroOn || arOn) || !tipPt) return;
   fx2.beginPath(); fx2.arc(tipPt.x, tipPt.y, pinchOn ? 13 : 10, 0, Math.PI * 2);   // your fingertip as the phone sees it
   fx2.fillStyle = pinchOn ? 'rgba(120,230,140,.9)' : 'rgba(127,224,255,.8)'; fx2.fill();
   fx2.lineWidth = 3; fx2.strokeStyle = '#fff'; fx2.stroke();
@@ -339,6 +416,7 @@ function frame(now, xrFrame) {
     reticle.visible = !!pose; if (pose) reticle.matrix.fromArray(pose.transform.matrix);
   }
   if (gyroOn) { gyroFrame(); handStep(now); }
+  if (arOn && xrFrame && placed) arHandStep(now, xrFrame);
   if (FAUCET) FAUCET.visible = !(arOn || gyroOn) || B.S.keep;
   B.update(dt, now / 1000);
   rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', 'Tap the bottle to make a hole. Tap a hole to tape it.'); rdT = .25; }

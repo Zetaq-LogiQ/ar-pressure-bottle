@@ -22,7 +22,9 @@
   #bAR, #bHand { background: #FFD36B !important; color: #08202E !important; }
   #hint { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); background: var(--chip); padding: 10px 14px; border-radius: 14px; font-size: 14px; text-align: center; max-width: calc(100vw - 64px); }
   #vid { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  #fx { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #fx { position: fixed; inset: 0; width: 100%; height: 100%; } #ui > #fx { pointer-events: none; }
+  #fit { position: fixed; left: 50%; transform: translateX(-50%); bottom: 150px; background: var(--chip); padding: 6px 12px; border-radius: 999px; font-size: 12px; display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  #fit input { width: 150px; }
   #hand { position: fixed; right: 12px; top: max(12px, env(safe-area-inset-top)); background: var(--chip); padding: 5px 10px; border-radius: 999px; font-size: 12px; }
   .hide { display: none !important; }
 </style>
@@ -30,12 +32,13 @@
 <body>
 <video id="vid" class="hide" playsinline muted autoplay></video>
 <canvas id="cv"></canvas>
-<canvas id="fx"></canvas>
 <div id="ui">
+  <canvas id="fx"></canvas>
   <div id="rd"></div>
   <div id="hint" class="hide"></div>
   <div id="toast"></div>
   <div id="hand" class="hide"></div>
+  <label id="fit" class="hide">Camera fit <input id="fitR" type="range" min="45" max="85" step="1" value="63"></label>
   <div id="bar">
     <button id="bAR">Place in my room (AR)</button>
     <button id="bHand">Use my hand</button>
@@ -51,6 +54,6 @@
   </div>
 </div>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
-<script type="module" src="./main.js?v=6"></script>
+<script type="module" src="./main.js?v=7"></script>
 </body>
 </html>
