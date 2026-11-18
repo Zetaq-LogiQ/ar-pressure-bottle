@@ -3,40 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Pressure Bottle AR</title>
+<title>Pressure Bottle</title>
 <style>
   :root { --ink: #EAF6FF; --chip: rgba(10, 24, 40, .62); --on: #2FB6E8; }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0B1A2A; font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); }
-  body { background: radial-gradient(ellipse at 50% 30%, #2B5C7E 0%, #0B1A2A 75%); }
-  #vid { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-  #cv, #fx { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #fx { pointer-events: none; }
-  #rd { position: fixed; left: 12px; top: 12px; background: var(--chip); backdrop-filter: blur(6px); border-radius: 12px; padding: 8px 10px; font-size: 12px; max-width: calc(100vw - 48px); }
+  html, body { margin: 0; height: 100%; overflow: hidden; font-family: "Segoe UI", system-ui, sans-serif; color: var(--ink); }
+  body { background: linear-gradient(180deg, #183A6B 0%, #2B7C93 55%, #0A1626 100%); }
+  #cv { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #rd { position: fixed; left: 12px; top: max(12px, env(safe-area-inset-top)); background: var(--chip); backdrop-filter: blur(6px); border-radius: 12px; padding: 8px 10px; font-size: 12px; max-width: calc(100vw - 48px); }
   #rd .rt { font-size: 13px; margin-bottom: 4px; } #rd .rs { opacity: .8; }
   #rd table { border-collapse: collapse; } #rd th { font-weight: 600; opacity: .7; text-align: left; padding: 1px 8px 1px 0; }
   #rd td { padding: 1px 8px 1px 0; } #rd tr.tp td { opacity: .5; } .tagk { background: #2FB6E8; color: #04202E; border-radius: 6px; padding: 0 5px; font-size: 11px; }
   #bar { position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - 32px); }
-  #bar button { border: 0; border-radius: 999px; padding: 9px 14px; background: var(--chip); color: var(--ink); font: 600 13px "Segoe UI", system-ui, sans-serif; backdrop-filter: blur(6px); cursor: pointer; }
+  #bar button { border: 0; border-radius: 999px; padding: 10px 14px; background: var(--chip); color: var(--ink); font: 600 13px "Segoe UI", system-ui, sans-serif; backdrop-filter: blur(6px); cursor: pointer; }
   #bar button.on { background: var(--on); color: #04202E; }
-  #hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); background: var(--chip); padding: 6px 12px; border-radius: 999px; font-size: 13px; white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
-  @media (max-width: 700px) { #hint { top: auto; bottom: 64px; } }
-  #toast { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); background: rgba(255, 224, 130, .95); color: #08202E; padding: 6px 12px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: rgba(255, 224, 130, .95); color: #08202E; padding: 6px 12px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: calc(100vw - 48px); text-align: center; }
   #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-<video id="vid" playsinline muted></video>
 <canvas id="cv"></canvas>
-<canvas id="fx"></canvas>
 <div id="rd"></div>
-<div id="hint">Starting camera…</div>
 <div id="toast"></div>
 <div id="bar">
   <button id="bRefill">Refill</button>
   <button id="bKeep">Keep level</button>
+  <button id="bTape">Tape all</button>
+  <button id="bOpen">Open all</button>
   <button id="bNew">New bottle</button>
-  <button id="bCam" class="on">Camera</button>
-  <button id="bFlip">Flip camera</button>
 </div>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 <script type="module" src="./main.js"></script>

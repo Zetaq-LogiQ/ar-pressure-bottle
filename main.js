@@ -1,14 +1,12 @@
-// main.js - AR demo of the Pressure Lab water bottle: webcam behind, the bottle in front, your fingertip pokes and covers holes.
+// main.js - Pressure Bottle demo: the Pressure Lab water bottle on its own. Tap the bottle to make holes, tap a hole to tape / open it.
 // Physics and the bottle model are the delivered pressure_lab bottle.js, unchanged (Torricelli jets, draining).
-import { THREE, V3, clamp } from './lab.js';
+import { THREE, V3, clamp, lerp } from './lab.js';
 import { RoomEnvironment } from './vendor/addons/environments/RoomEnvironment.js';
 import { createBottle } from './bottle.js';
 
 const $ = id => document.getElementById(id);
-const Y0 = 40.4, R_OUT = 4.5, DWELL = .7, COVER_PX = 34;
-const params = new URLSearchParams(location.search);
 
-// ------------------------------------------------------------------ renderer / scene (transparent, so the camera shows through)
+// ------------------------------------------------------------------ renderer / scene
 const canvas = $('cv');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1)); renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -17,31 +15,84 @@ renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadow
 const scene = new THREE.Scene();
 const pmrem = new THREE.PMREMGenerator(renderer); scene.environment = pmrem.fromScene(new RoomEnvironment(), .04).texture; scene.environmentIntensity = .8;
 scene.add(new THREE.HemisphereLight('#CFE8FF', '#23344A', .9));
-const sun = new THREE.DirectionalLight('#FFFFFF', 2.3); sun.position.set(60, 140, 90); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -.0004; sun.shadow.normalBias = .02;
-const sc = sun.shadow.camera; sc.left = sc.bottom = -110; sc.right = sc.top = 110; sc.near = 1; sc.far = 400; scene.add(sun);
-const rimL = new THREE.DirectionalLight('#9FD8FF', .9); rimL.position.set(-80, 60, -80); scene.add(rimL);
-// shadow catcher: only the shadow shows on the real table
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.ShadowMaterial({ opacity: .35 }));
-ground.rotation.x = -Math.PI / 2; ground.position.y = .3; ground.receiveShadow = true; scene.add(ground);
-const camera = new THREE.PerspectiveCamera(30, 1, 1, 3000);
+const sun = new THREE.DirectionalLight('#FFFFFF', 2.3); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -.0004; sun.shadow.normalBias = .02; scene.add(sun, sun.target);
+const rimL = new THREE.DirectionalLight('#9FD8FF', .9); scene.add(rimL);
+const camera = new THREE.PerspectiveCamera(30, 1, .5, 5000);
 
-// ------------------------------------------------------------------ the bottle (only the first station of the lab)
+// ------------------------------------------------------------------ the bottle
 const ctx = { act: () => { }, toast, sfx, emit: () => { }, camTo: () => { }, camFollow: () => { } };
 const B = createBottle(ctx); scene.add(B.group);
-B.group.children.slice(0, 20).forEach(o => o.visible = false);          // catch basin + its distance rings: the real table replaces them
-const faucet = B.group.children.find(c => c.type === 'Group' && c.children.length === 4 && c.children[0].geometry?.parameters?.height === 100);
 B.setLevel(24, 'demo');
 
-function layout() {
-  const W = innerWidth, H = innerHeight; renderer.setSize(W, H, false); camera.aspect = W / H;
-  const fx = $('fx'); fx.width = W * devicePixelRatio; fx.height = H * devicePixelRatio;
-  // frame the bottle (0..78 cm) plus room for jets on both sides; phones in portrait need more distance for the width
-  const tf = Math.tan(THREE.MathUtils.degToRad(15)), dist = Math.max(118 / 2 / tf, 150 / 2 / (tf * camera.aspect));
-  camera.position.set(0, 44 + dist * Math.sin(.12), dist * Math.cos(.12)); camera.lookAt(0, 40, 0); camera.updateProjectionMatrix();
+// ------------------------------------------------------------------ camera: frames the bottle and every jet's landing mark
+const cam = { t: V3(0, 40, 0), yaw: 28, pitch: 14, zoom: 1, fitW: 60, fitH: 80 };
+function fitPoints(r) {
+  const pts = [V3(-6, 1, 0), V3(6, 1, 0), V3(0, 77.5, 0), V3(-5.5, 40, 0), V3(5.5, 40, 0), V3(0, 40, -5.5), V3(0, 40, 5.5)];
+  for (const o of B.S.holes) { const J = o.jet; if (J.splash.visible) { pts.push(J.splash.position.clone()); if (J.tag.visible) { const tp = J.tag.position.clone().add(V3(0, 2, 0)); pts.push(tp.clone().addScaledVector(r, 7), tp.clone().addScaledVector(r, -7)); } } }   // tags are about 14 cm wide
+  return pts;
 }
+function fit(k) {
+  const y = THREE.MathUtils.degToRad(cam.yaw), p = THREE.MathUtils.degToRad(cam.pitch);
+  const r = V3(Math.cos(y), 0, -Math.sin(y)), u = V3(-Math.sin(p) * Math.sin(y), Math.cos(p), -Math.sin(p) * Math.cos(y)), R = V3(0, 36, 0);
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const P of fitPoints(r)) { const d = P.clone().sub(R), a = d.dot(r), b = d.dot(u); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
+  const m = 8 + .1 * Math.max(x1 - x0, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const t = R.clone().addScaledVector(r, cx).addScaledVector(u, cy);
+  cam.t.lerp(t, k); cam.fitW = lerp(cam.fitW, x1 - x0 + 2 * m, k); cam.fitH = lerp(cam.fitH, y1 - y0 + 2 * m, k);
+}
+// space the UI takes: readout on top, buttons at the bottom
+function view() { const W = innerWidth, H = innerHeight, top = $('rd').offsetHeight + 20, bot = $('bar').offsetHeight + 28; return { W, H, h: Math.max(100, H - top - bot), off: (top - bot) / 2 }; }
+function updateCamera(dt) {
+  fit(Math.min(1, dt * 3));
+  const v = view(), tf = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const dist = Math.max(cam.fitH / 2 / (tf * v.h / v.H), cam.fitW / 2 / (tf * camera.aspect * .94)) * cam.zoom;
+  const y = THREE.MathUtils.degToRad(cam.yaw), p = THREE.MathUtils.degToRad(cam.pitch);
+  camera.position.set(cam.t.x + dist * Math.sin(y) * Math.cos(p), cam.t.y + dist * Math.sin(p), cam.t.z + dist * Math.cos(y) * Math.cos(p));
+  camera.lookAt(cam.t);
+  camera.setViewOffset(v.W, v.H, 0, -v.off, v.W, v.H);                  // keep the scene centred between the readout and the buttons
+  camera.near = Math.max(.5, dist / 200); camera.far = dist * 40 + 2000; camera.updateProjectionMatrix();
+  const s = Math.max(cam.fitW, cam.fitH) * .9; sun.position.set(cam.t.x + s * .8, cam.t.y + s * 1.6, cam.t.z + s * .9); sun.target.position.copy(cam.t);
+  const sc = sun.shadow.camera; sc.left = sc.bottom = -s; sc.right = sc.top = s; sc.near = 1; sc.far = s * 5; sc.updateProjectionMatrix();
+  rimL.position.set(cam.t.x - s, cam.t.y + s * .6, cam.t.z - s);
+}
+function layout() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; }
 addEventListener('resize', layout); layout();
 
-// ------------------------------------------------------------------ UI
+// ------------------------------------------------------------------ input: tap = poke / tape, drag = turn, pinch or wheel = zoom
+const ray = new THREE.Raycaster(), ptr = new Map(); let drag = null, pinch0 = 0;
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId); ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptr.size === 1) drag = { x: e.clientX, y: e.clientY, t: performance.now(), moved: 0 };
+  else { drag = null; const [a, b] = [...ptr.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); }
+});
+canvas.addEventListener('pointermove', e => {
+  if (!ptr.has(e.pointerId)) return; const q = ptr.get(e.pointerId), dx = e.clientX - q.x, dy = e.clientY - q.y; q.x = e.clientX; q.y = e.clientY;
+  if (ptr.size === 1 && drag) { drag.moved += Math.abs(dx) + Math.abs(dy); if (drag.moved > 8) { cam.yaw -= dx * .3; cam.pitch = clamp(cam.pitch + dy * .25, -5, 60); } }
+  else if (ptr.size === 2) { const [a, b] = [...ptr.values()], d = Math.hypot(a.x - b.x, a.y - b.y); if (pinch0) cam.zoom = clamp(cam.zoom * pinch0 / d, .4, 2.2); pinch0 = d; }
+});
+function up(e) {
+  if (!ptr.has(e.pointerId)) return; ptr.delete(e.pointerId);
+  if (drag && drag.moved <= 8 && performance.now() - drag.t < 600) tap(e.clientX, e.clientY);
+  drag = null; if (ptr.size < 2) pinch0 = 0;
+}
+canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', e => { ptr.delete(e.pointerId); drag = null; });
+canvas.addEventListener('wheel', e => { e.preventDefault(); cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * .001), .4, 2.2); }, { passive: false });
+function tap(x, y) {
+  const n = B.S.holes.length;
+  for (const dx of [0, -10, 10, -18, 18]) {                             // a finger is wide: a tap just beside the bottle still counts
+    ray.setFromCamera(new THREE.Vector2((x + dx) / innerWidth * 2 - 1, -y / innerHeight * 2 + 1), camera);
+    if (B.pick(ray)) break;
+  }
+  if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);   // a new hole opens at once
+}
+
+// ------------------------------------------------------------------ buttons
+$('bRefill').onclick = () => { B.setLevel(24, 'demo'); B.fill(); };
+$('bKeep').onclick = () => { B.setKeep(!B.S.keep); $('bKeep').classList.toggle('on', B.S.keep); };
+$('bTape').onclick = () => { if (!B.S.holes.length) return toast('Tap the bottle to make a hole first.'); B.tapeAll(); sfx('tap'); };
+$('bOpen').onclick = () => { if (!B.S.holes.length) return toast('Tap the bottle to make a hole first.'); B.S.holes.forEach(o => B.setTape(o, false)); sfx('rip'); };
+$('bNew').onclick = () => { B.newBottle(); B.setLevel(24, 'demo'); };
+
 let toastT = 0;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2200); }
 let actx = null;
@@ -52,114 +103,16 @@ function sfx(k) {
     g.gain.setValueAtTime(.12, t); g.gain.exponentialRampToValueAtTime(.001, t + .12); o.connect(g).connect(actx.destination); o.start(t); o.stop(t + .13);
   } catch (e) { }
 }
-$('bRefill').onclick = () => { B.setLevel(24, 'demo'); B.fill(); };
-$('bKeep').onclick = () => { B.setKeep(!B.S.keep); $('bKeep').classList.toggle('on', B.S.keep); };
-$('bNew').onclick = () => { B.newBottle(); B.setLevel(24, 'demo'); };
-$('bCam').onclick = () => camOn ? stopCam() : startCam();
-$('bFlip').onclick = () => { facing = facing === 'user' ? 'environment' : 'user'; startCam(); };
-
-// mouse / touch fallback: tap the bottle to poke (opens at once), tap a hole to tape / untape
-const ray = new THREE.Raycaster();
-canvas.addEventListener('pointerdown', e => {
-  ray.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, -e.clientY / innerHeight * 2 + 1), camera);
-  const n = B.S.holes.length; B.pick(ray);
-  if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);
-});
-
-// ------------------------------------------------------------------ camera + hand tracking
-const vid = $('vid'); let facing = matchMedia('(pointer: coarse)').matches ? 'environment' : 'user'; let camOn = false, hand = null, lastVT = -1, tip = null, seen = 0;
-async function startCam() {
-  try {
-    const st = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    if (vid.srcObject) vid.srcObject.getTracks().forEach(t => t.stop()); vid.srcObject = st; vid.style.transform = facing === 'user' ? 'scaleX(-1)' : 'none'; await vid.play(); camOn = true; vid.style.display = ''; $('bCam').classList.add('on');
-    hint('Loading hand tracking…');
-    if (!hand) await loadHand();
-    hint('Hold your fingertip on the bottle to poke a hole · cover a hole to stop it');
-  } catch (e) { console.warn(e); camOn = false; vid.style.display = 'none'; $('bCam').classList.remove('on'); hint('No camera: tap the bottle to poke a hole'); }
-}
-function stopCam() { const s = vid.srcObject; s && s.getTracks().forEach(t => t.stop()); vid.srcObject = null; camOn = false; tip = null; vid.style.display = 'none'; $('bCam').classList.remove('on'); hint('Camera off: tap the bottle to poke a hole'); }
-async function loadHand() {
-  const V = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
-  const { FilesetResolver, HandLandmarker } = await import(V + '/vision_bundle.mjs');
-  const fs = await FilesetResolver.forVisionTasks(V + '/wasm');
-  hand = await HandLandmarker.createFromOptions(fs, {
-    baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: 'GPU' },
-    runningMode: 'VIDEO', numHands: 1,
-  });
-}
-function hint(s) { $('hint').textContent = s; }
-
-// landmark (video space, 0..1) -> screen pixels, matching the mirrored object-fit: cover video
-function toScreen(lm) {
-  const W = innerWidth, H = innerHeight, vw = vid.videoWidth || 1280, vh = vid.videoHeight || 720, s = Math.max(W / vw, H / vh);
-  const dw = vw * s, dh = vh * s; return { x: (W - dw) / 2 + (facing === 'user' ? 1 - lm.x : lm.x) * dw, y: (H - dh) / 2 + lm.y * dh };
-}
-function track() {
-  if (!camOn || !hand || vid.readyState < 2 || vid.currentTime === lastVT) return;
-  lastVT = vid.currentTime;
-  const r = hand.detectForVideo(vid, performance.now());
-  if (r.landmarks && r.landmarks.length) {
-    const p = toScreen(r.landmarks[0][8]);                                   // index fingertip
-    tip = tip ? { x: tip.x + (p.x - tip.x) * .55, y: tip.y + (p.y - tip.y) * .55 } : p; seen = performance.now();
-  } else if (performance.now() - seen > 250) tip = null;
-}
-
-// ------------------------------------------------------------------ fingertip actions
-const plane = new THREE.Plane(V3(0, 0, 1), 0), hit = V3(0, 0, 0);
-let dwell = 0, cool = 0, dwellAt = null, state = '';
-function fingerOnWall(p) {
-  ray.setFromCamera(new THREE.Vector2(p.x / innerWidth * 2 - 1, -p.y / innerHeight * 2 + 1), camera);
-  if (!ray.ray.intersectPlane(plane, hit)) return null;
-  if (Math.abs(hit.x) > R_OUT + 1.5 || hit.y < Y0 + .6 || hit.y > Y0 + B.HMAX) return null;
-  const side = hit.x >= 0 ? 1 : -1;
-  return { h: hit.y - Y0, th: side * (Math.PI / 2 - .3) };                // jets leave sideways, a little toward you, so you see the curve
-}
-function holeScreen(o) { const w = B.wallPoint(o.h, o.th).project(camera); return { x: (w.x + 1) / 2 * innerWidth, y: (1 - w.y) / 2 * innerHeight }; }
-function fingerStep(dt) {
-  state = ''; cool = Math.max(0, cool - dt);
-  // covering: a hole under the fingertip is plugged while the finger stays there
-  let covering = null;
-  for (const o of B.S.holes) {
-    const q = holeScreen(o), near = tip && Math.hypot(q.x - tip.x, q.y - tip.y) < COVER_PX;
-    if (near && !covering) covering = o;
-    if (o.byFinger && o !== covering) { B.setTape(o, false); o.byFinger = false; }
-  }
-  if (covering) { if (!covering.taped) { B.setTape(covering, true); covering.byFinger = true; } dwell = 0; state = 'cover'; return; }
-  if (!tip) { dwell = 0; return; }
-  const w = fingerOnWall(tip);
-  if (!w || cool > 0) { dwell = 0; return; }
-  if (dwellAt && Math.hypot(tip.x - dwellAt.x, tip.y - dwellAt.y) > 22) dwell = 0;
-  if (dwell === 0) dwellAt = { ...tip };
-  dwell += dt; state = 'aim';
-  if (dwell >= DWELL) {
-    const o = B.poke(w.h, w.th); if (o) B.setTape(o, false);
-    dwell = 0; cool = .9; state = '';
-  }
-}
-
-// overlay: fingertip dot + poke progress ring
-const fx = $('fx'), g2 = fx.getContext('2d');
-function drawFx() {
-  const k = devicePixelRatio; g2.setTransform(k, 0, 0, k, 0, 0); g2.clearRect(0, 0, innerWidth, innerHeight);
-  if (!tip) return;
-  g2.beginPath(); g2.arc(tip.x, tip.y, 7, 0, Math.PI * 2); g2.fillStyle = state === 'cover' ? '#FFD36B' : '#7FE0FF'; g2.fill();
-  g2.lineWidth = 2; g2.strokeStyle = 'rgba(255,255,255,.9)'; g2.stroke();
-  if (state === 'aim') { g2.beginPath(); g2.arc(tip.x, tip.y, 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * dwell / DWELL); g2.lineWidth = 4; g2.strokeStyle = '#FFD36B'; g2.stroke(); }
-  if (state === 'cover') { g2.font = '600 13px Segoe UI, system-ui'; g2.fillStyle = '#FFD36B'; g2.fillText('covering', tip.x + 14, tip.y - 12); }
-}
 
 // ------------------------------------------------------------------ loop
 let last = performance.now(), rdT = 0;
 function frame(now) {
   const dt = Math.min(.05, (now - last) / 1000); last = now;
-  track(); fingerStep(dt);
   B.update(dt, now / 1000);
-  if (faucet) faucet.visible = B.S.keep;
-  rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', camOn ? 'Hold your fingertip on the bottle.' : 'Tap the bottle to poke a hole.'); rdT = .25; }
-  renderer.render(scene, camera); drawFx();
+  rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', 'Tap the bottle to make a hole. Tap a hole to tape it.'); rdT = .25; }
+  updateCamera(dt); renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-if (params.has('nocam')) { vid.style.display = 'none'; $('bCam').classList.remove('on'); hint('Tap the bottle to poke a hole'); } else startCam();
 // test hook
-window.__demo = { B, camera, holeScreen, setTip: p => { tip = p; seen = performance.now() + 1e9; } };
+window.__demo = { B, camera, tap };
