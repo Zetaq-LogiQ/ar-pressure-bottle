@@ -24,19 +24,17 @@ const ctx = { act: () => { }, toast, sfx, emit: () => { }, camTo: () => { }, cam
 const B = createBottle(ctx); scene.add(B.group);
 B.setLevel(24, 'demo');
 
-// ------------------------------------------------------------------ camera: frames the bottle and every jet's landing mark
+// ------------------------------------------------------------------ camera: fixed framing - the bottle stays in one place
+// frames the bottle and the farthest any jet can land (most jets land within 60 cm of the wall), so new holes never move the view
 const cam = { t: V3(0, 40, 0), yaw: 28, pitch: 14, zoom: 1, fitW: 60, fitH: 80 };
-function fitPoints(r) {
-  const pts = [V3(-6, 1, 0), V3(6, 1, 0), V3(0, 77.5, 0), V3(-5.5, 40, 0), V3(5.5, 40, 0), V3(0, 40, -5.5), V3(0, 40, 5.5)];
-  for (const o of B.S.holes) { const J = o.jet; if (J.splash.visible) { pts.push(J.splash.position.clone()); if (J.tag.visible) { const tp = J.tag.position.clone().add(V3(0, 2, 0)); pts.push(tp.clone().addScaledVector(r, 7), tp.clone().addScaledVector(r, -7)); } } }   // tags are about 14 cm wide
-  return pts;
-}
+const FIXED = [V3(0, 77.5, 0)]; for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2; FIXED.push(V3(Math.sin(a) * 64, 1, Math.cos(a) * 64), V3(Math.sin(a) * 64, 9, Math.cos(a) * 64)); }
+function fitPoints() { return FIXED; }
 function fit(k) {
   const y = THREE.MathUtils.degToRad(cam.yaw), p = THREE.MathUtils.degToRad(cam.pitch);
   const r = V3(Math.cos(y), 0, -Math.sin(y)), u = V3(-Math.sin(p) * Math.sin(y), Math.cos(p), -Math.sin(p) * Math.cos(y)), R = V3(0, 36, 0);
   let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
-  for (const P of fitPoints(r)) { const d = P.clone().sub(R), a = d.dot(r), b = d.dot(u); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
-  const m = 8 + .1 * Math.max(x1 - x0, y1 - y0), cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  for (const P of fitPoints()) { const d = P.clone().sub(R), a = d.dot(r), b = d.dot(u); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
+  const m = 3, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
   const t = R.clone().addScaledVector(r, cx).addScaledVector(u, cy);
   cam.t.lerp(t, k); cam.fitW = lerp(cam.fitW, x1 - x0 + 2 * m, k); cam.fitH = lerp(cam.fitH, y1 - y0 + 2 * m, k);
 }
@@ -55,8 +53,9 @@ function updateCamera(dt) {
   const sc = sun.shadow.camera; sc.left = sc.bottom = -s; sc.right = sc.top = s; sc.near = 1; sc.far = s * 5; sc.updateProjectionMatrix();
   rimL.position.set(cam.t.x - s, cam.t.y + s * .6, cam.t.z - s);
 }
-function layout() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; }
+function layout() { renderer.setSize(innerWidth, innerHeight, false); camera.aspect = innerWidth / innerHeight; cam.zoom = camera.aspect < .8 ? .8 : 1; }   // phones in portrait: a little closer
 addEventListener('resize', layout); layout();
+fit(1);                                                                    // start already framed: no zoom-in on load
 
 // ------------------------------------------------------------------ input: tap = poke / tape, drag = turn, pinch or wheel = zoom
 const ray = new THREE.Raycaster(), ptr = new Map(); let drag = null, pinch0 = 0;
