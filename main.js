@@ -66,7 +66,10 @@ canvas.addEventListener('pointerdown', e => {
 });
 canvas.addEventListener('pointermove', e => {
   if (!ptr.has(e.pointerId)) return; const q = ptr.get(e.pointerId), dx = e.clientX - q.x, dy = e.clientY - q.y; q.x = e.clientX; q.y = e.clientY;
-  if (gyroOn) { if (drag) drag.moved += Math.abs(dx) + Math.abs(dy); return; }   // the phone's motion turns the view, not drags
+  if (gyroOn) {                                                         // the phone's motion turns the view; a sideways swipe spins the bottle (see its back)
+    if (drag) { drag.moved += Math.abs(dx) + Math.abs(dy); if (drag.moved > 8 && gPlaced && ptr.size === 1) B.group.rotation.y += dx * .012; }
+    return;
+  }
   if (ptr.size === 1 && drag) { drag.moved += Math.abs(dx) + Math.abs(dy); if (drag.moved > 8) { cam.yaw -= dx * .3; cam.pitch = clamp(cam.pitch + dy * .25, -5, 60); } }
   else if (ptr.size === 2) { const [a, b] = [...ptr.values()], d = Math.hypot(a.x - b.x, a.y - b.y); if (pinch0) cam.zoom = clamp(cam.zoom * pinch0 / d, .4, 2.2); pinch0 = d; }
 });
@@ -233,7 +236,7 @@ function gyroTap(x, y) {
     B.group.visible = true; gPlaced = true; reticle.visible = false; show('bMove', true);
     applySize(); sizeBtns(true);
     rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
-    hint(''); toast('Bottle placed. Pinch your fingers on the bottle (or tap it) to make holes.'); return;
+    hint(''); toast('Bottle placed. Pinch on the bottle (or tap it) to make holes. Swipe sideways to spin it.'); return;
   }
   tap(x, y);
 }
