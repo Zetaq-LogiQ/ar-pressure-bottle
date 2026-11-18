@@ -103,15 +103,82 @@ function sfx(k) {
   } catch (e) { }
 }
 
+// ------------------------------------------------------------------ AR: place the real-size bottle on your floor or table (WebXR, Android Chrome)
+// The lab works in cm; in AR the bottle group is scaled 0.01 so 1 cm = 1 cm in your room. The catch tray is hidden: jets land on the real floor.
+renderer.xr.enabled = true;
+const BASIN_PARTS = B.group.children.slice(0, 20);                      // catch tray, pool, distance rings and their labels
+const FAUCET = B.group.children.find(c => c.type === 'Group' && c.children.length === 4 && c.children[0].geometry?.parameters?.height === 100);
+const catcher = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.ShadowMaterial({ opacity: .4 }));
+catcher.rotation.x = -Math.PI / 2; catcher.position.y = .3; catcher.receiveShadow = true; catcher.visible = false; B.group.add(catcher);
+const reticle = new THREE.Mesh(new THREE.RingGeometry(.09, .115, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: '#FFD36B' }));
+reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+const ctl = renderer.xr.getController(0); scene.add(ctl);
+let hitSrc = null, placed = false, arOn = false;
+const show = (id, on) => $(id).classList.toggle('hide', !on);
+function hint(s) { $('hint').textContent = s || ''; show('hint', !!s); }
+
+$('bAR').onclick = async () => {
+  if (!navigator.xr || !(await navigator.xr.isSessionSupported('immersive-ar').catch(() => false)))
+    return toast('AR needs an Android phone with Chrome (Google Play Services for AR). iPhone Safari does not support it yet.');
+  try {
+    const session = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay'], domOverlay: { root: $('ui') } });
+    renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(session);
+    hitSrc = await session.requestHitTestSource({ space: await session.requestReferenceSpace('viewer') });
+    session.addEventListener('end', arEnd);
+    arOn = true; placed = false; B.group.visible = false; B.group.scale.setScalar(.01);
+    BASIN_PARTS.forEach(o => o.visible = false); catcher.visible = true;
+    document.body.style.background = 'transparent';
+    show('bAR', false); show('bExit', true); show('bMove', false);
+    hint('Move the phone slowly over the floor or a table. When the yellow ring appears, tap to place the bottle.');
+  } catch (e) { console.warn(e); toast('Could not start AR on this phone.'); }
+};
+$('bExit').onclick = () => renderer.xr.getSession()?.end();
+$('bMove').onclick = () => { placed = false; B.group.visible = false; show('bMove', false); hint('Tap where the yellow ring is to put the bottle there.'); };
+function arEnd() {
+  hitSrc = null; arOn = false; placed = false; reticle.visible = false;
+  B.group.visible = true; B.group.scale.setScalar(1); B.group.position.set(0, 0, 0); B.group.rotation.set(0, 0, 0);
+  BASIN_PARTS.forEach(o => o.visible = true); catcher.visible = false; document.body.style.background = '';
+  show('bAR', true); show('bExit', false); show('bMove', false); hint(''); layout();
+}
+// taps on the buttons and the readout must not also poke the bottle
+$('ui').addEventListener('beforexrselect', e => { if (e.target.closest('button, #rd')) e.preventDefault(); });
+const m4 = new THREE.Matrix4(), xrRay = new THREE.Raycaster(), UP = V3(0, 1, 0);
+ctl.addEventListener('select', () => {
+  if (!arOn) return;
+  if (!placed) {
+    if (!reticle.visible) return;
+    B.group.position.setFromMatrixPosition(reticle.matrix);
+    const c = renderer.xr.getCamera().position; B.group.rotation.set(0, Math.atan2(c.x - B.group.position.x, c.z - B.group.position.z) - .5, 0);   // turned a little so side jets show
+    B.group.visible = true; placed = true; reticle.visible = false; show('bMove', true);
+    sun.position.copy(B.group.position).add(V3(.6, 1.6, .9)); sun.target.position.copy(B.group.position);
+    const sc = sun.shadow.camera; sc.left = sc.bottom = -1.2; sc.right = sc.top = 1.2; sc.near = .05; sc.far = 5; sc.updateProjectionMatrix();
+    rimL.position.copy(B.group.position).add(V3(-1, .6, -1));
+    hint(''); toast('Bottle placed. Tap the bottle to make holes. Tap a hole to tape it.'); return;
+  }
+  m4.identity().extractRotation(ctl.matrixWorld);
+  const o = V3(0, 0, 0).setFromMatrixPosition(ctl.matrixWorld), d = V3(0, 0, -1).applyMatrix4(m4);
+  const n = B.S.holes.length;
+  for (const a of [0, -.02, .02, -.035, .035]) {                       // a finger is wide: a tap just beside the bottle still counts
+    xrRay.set(o, d.clone().applyAxisAngle(UP, a)); if (B.pick(xrRay)) break;
+  }
+  if (B.S.holes.length > n) B.setTape(B.S.holes[B.S.holes.length - 1], false);
+});
+
 // ------------------------------------------------------------------ loop
 let last = performance.now(), rdT = 0;
-function frame(now) {
+function frame(now, xrFrame) {
   const dt = Math.min(.05, (now - last) / 1000); last = now;
+  if (arOn && xrFrame && hitSrc && !placed) {
+    const res = xrFrame.getHitTestResults(hitSrc), ref = renderer.xr.getReferenceSpace();
+    const pose = res.length && res[0].getPose(ref);
+    reticle.visible = !!pose; if (pose) reticle.matrix.fromArray(pose.transform.matrix);
+  }
+  if (FAUCET) FAUCET.visible = !arOn || B.S.keep;
   B.update(dt, now / 1000);
   rdT -= dt; if (rdT <= 0) { $('rd').innerHTML = B.readout().replace('Tap the bottle to poke a hole.', 'Tap the bottle to make a hole. Tap a hole to tape it.'); rdT = .25; }
-  updateCamera(dt); renderer.render(scene, camera);
-  requestAnimationFrame(frame);
+  if (!arOn) updateCamera(dt);
+  renderer.render(scene, camera);
 }
-requestAnimationFrame(frame);
+renderer.setAnimationLoop(frame);
 // test hook
 window.__demo = { B, camera, tap };

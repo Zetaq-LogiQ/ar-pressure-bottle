@@ -18,18 +18,28 @@
   #bar button.on { background: var(--on); color: #04202E; }
   #toast { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); background: rgba(255, 224, 130, .95); color: #08202E; padding: 6px 12px; border-radius: 10px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: calc(100vw - 48px); text-align: center; }
   #toast.show { opacity: 1; }
+  #ui { position: fixed; inset: 0; pointer-events: none; } #ui > * { pointer-events: auto; } #ui > #toast { pointer-events: none; }
+  #bAR { background: #FFD36B !important; color: #08202E !important; }
+  #hint { position: fixed; left: 50%; top: 45%; transform: translate(-50%, -50%); background: var(--chip); padding: 10px 14px; border-radius: 14px; font-size: 14px; text-align: center; max-width: calc(100vw - 64px); }
+  .hide { display: none !important; }
 </style>
 </head>
 <body>
 <canvas id="cv"></canvas>
-<div id="rd"></div>
-<div id="toast"></div>
-<div id="bar">
-  <button id="bRefill">Refill</button>
-  <button id="bKeep">Keep level</button>
-  <button id="bTape">Tape all</button>
-  <button id="bOpen">Open all</button>
-  <button id="bNew">New bottle</button>
+<div id="ui">
+  <div id="rd"></div>
+  <div id="hint" class="hide"></div>
+  <div id="toast"></div>
+  <div id="bar">
+    <button id="bAR">Place in my room (AR)</button>
+    <button id="bMove" class="hide">Move bottle</button>
+    <button id="bRefill">Refill</button>
+    <button id="bKeep">Keep level</button>
+    <button id="bTape">Tape all</button>
+    <button id="bOpen">Open all</button>
+    <button id="bNew">New bottle</button>
+    <button id="bExit" class="hide">Exit AR</button>
+  </div>
 </div>
 <script type="importmap">{ "imports": { "three": "./vendor/three.module.js" } }</script>
 <script type="module" src="./main.js"></script>
